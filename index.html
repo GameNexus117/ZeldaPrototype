@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>二维塞尔达雏形 PROTOTYPE</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { height:100%; background:#0d0f14; overflow:hidden;
+    font-family:"Courier New",ui-monospace,monospace; touch-action:none; user-select:none; }
+  #wrap { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
+  #game { position:relative; }
+  canvas { display:block; image-rendering:pixelated; image-rendering:crisp-edges;
+    background:#e8d49a; box-shadow:0 0 0 3px #2a2118, 0 14px 40px rgba(0,0,0,.6); }
+
+  /* ---- 标题横幅 ---- */
+  #banner { position:absolute; top:14px; left:14px; padding:5px 14px;
+    background:linear-gradient(90deg,rgba(10,15,25,.92),rgba(10,15,25,0));
+    color:#7fd4ff; font-weight:bold; font-size:15px; letter-spacing:1px;
+    text-shadow:1px 1px 0 #0a1018; pointer-events:none; white-space:nowrap; }
+  #banner small { color:#9fb0c0; font-weight:normal; }
+
+  /* ---- 提示 ---- */
+  #hint { position:absolute; bottom:12px; left:50%; transform:translateX(-50%);
+    color:#fff; background:rgba(10,15,25,.62); padding:6px 14px; border-radius:4px;
+    font-size:12px; letter-spacing:.5px; pointer-events:none; transition:opacity .6s;
+    text-align:center; }
+
+  /* ---- 移动端触控 ---- */
+  #touch { position:absolute; inset:0; pointer-events:none; }
+  .pad { position:absolute; bottom:24px; pointer-events:auto; }
+  #dpad { left:24px; width:138px; height:138px; }
+  .dbtn { position:absolute; width:46px; height:46px; background:rgba(30,40,55,.55);
+    border:2px solid rgba(150,180,210,.5); border-radius:8px; }
+  .dbtn:active { background:rgba(120,170,255,.6); }
+  #up{ left:46px; top:0 } #down{ left:46px; top:92px }
+  #left{ left:0; top:46px } #right{ left:92px; top:46px }
+  #atk { right:30px; bottom:30px; width:78px; height:78px; border-radius:50%;
+    background:radial-gradient(circle at 35% 30%,#ff8a5c,#c83a2a);
+    border:3px solid rgba(255,220,200,.7); color:#fff; font-weight:bold; font-size:22px;
+    display:flex; align-items:center; justify-content:center; pointer-events:auto; }
+  #atk:active { transform:scale(.92); }
+  @media (hover:hover) and (pointer:fine){ #touch{ display:none } }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="game">
+    <canvas id="cv"></canvas>
+    <div id="banner">二维塞尔达雏形 <small>PROTOTYPE</small></div>
+    <div id="hint">方向键 / WASD 移动 · J / 空格 挥剑 · 昼夜交替，夜里怪物更警觉 · 探索大地图清理营地</div>
+    <div id="touch">
+      <div id="dpad" class="pad">
+        <div class="dbtn" id="up"></div><div class="dbtn" id="down"></div>
+        <div class="dbtn" id="left"></div><div class="dbtn" id="right"></div>
+      </div>
+      <div id="atk" class="pad">劍</div>
+    </div>
+  </div>
+</div>
+<script>
+"use strict";
+/* ===================================================================
+   二维塞尔达雏形 — 像素原型
+   自由探索 + 怪物巡逻/营地休息/近战攻击
+=================================================================== */
+
+// ---------- 基础常量 ----------
+const TILE = 16;              // 美术像素 / 每格
+const VIEW_W = 24, VIEW_H = 15;          // 视口格数
+const CW = VIEW_W*TILE, CH = VIEW_H*TILE; // 画布内部分辨率 384x240
+const MAP_W = 144, MAP_H = 104;          // 地图格数（远大于视口，约4倍于初版）
+const WORLD_W = MAP_W*TILE, WORLD_H = MAP_H*TILE;
+
+// 地块类型
+const T = { SAND:0, GRASS:1, WATER:2, TREE:3, BUSH:4, FENCE:5, ROCK:6, FLOWER:7, CAMP:8, BEACH:9 };
+const SOLID = { [T.WATER]:1, [T.TREE]:1, [T.FENCE]:1, [T.ROCK]:1 }; // 阻挡通行
+
+// ---------- 调色板 ----------
+const C = {
+  sand:'#e8d49a', sandHi:'#f2e0ad', beach:'#ecdca6', dot:'#d8c184',
+  grass:'#8fcf52', grassDk:'#6fb338',
+  water:'#3a6ed8', waterDk:'#2e57b8', waterHi:'#5b8cf0',
+  treeLf:'#5fb83f', treeDk:'#3f8f2a', treeHi:'#7fd455', trunk:'#8a5a2a', trunkDk:'#6a4220',
+  bush:'#5fb83f', bushDk:'#3f8f2a',
+  fence:'#9a6633', fenceDk:'#724a24',
+  rock:'#9aa0a8', rockDk:'#6f757d', rockHi:'#c2c8d0',
+  flower:'#ff5a8a', flowerY:'#ffd23f',
+  // 玩家
+  skin:'#f4c79a', skinDk:'#d89a64', hair:'#e08a2a', hairDk:'#b56a18',
+  tunic:'#3a78d8', tunicDk:'#2a58a8', boot:'#7a4a24',
+  shield:'#dfe4ee', shieldEdge:'#9aa4b6', shieldBlue:'#3a78d8',
+  sword:'#eef2f6', swordDk:'#b9c2cc', hilt:'#d8a83a',
+  outline:'#20283a', eye:'#202024',
+  // 怪物
+  monBody:'#e0492f', monDk:'#b3331e', monHi:'#ff6f4a', monEye:'#fff4e0', monPupil:'#3a1008',
+  // 营火
+  log:'#7a4a24', logDk:'#5a3418', flame1:'#ffd23f', flame2:'#ff8a2a', flame3:'#ff4a1a',
+  // UI
+  heartF:'#ff4a5e', heartE:'#5a3038', heartHi:'#ff8a96',
+  hud:'#0d1018'
+};
+
+// ---------- 随机 ----------
+let seed = 1337;
+function rnd(){ seed=(seed*1103515245+12345)&0x7fffffff; return seed/0x7fffffff; }
+function ri(a,b){ return a+Math.floor(rnd()*(b-a+1)); }
+function chance(p){ return rnd()<p; }
+
+// ===================================================================
+//  地图生成
+// ===================================================================
+const map = new Uint8Array(MAP_W*MAP_H);
+const idx = (x,y)=> y*MAP_W+x;
+function get(x,y){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return T.TREE; return map[idx(x,y)]; }
+function set(x,y,v){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return; map[idx(x,y)]=v; }
+
+const camps = [];   // {tx,ty}  营地（怪物休息点）
+let spawnPx = {x:0,y:0};
+
+function buildMap(){
+  // 1. 基础铺沙
+  for(let i=0;i<map.length;i++) map[i]=T.SAND;
+
+  // 2. 草地斑块
+  for(let n=0;n<108;n++){
+    const cx=ri(3,MAP_W-4), cy=ri(3,MAP_H-4), r=ri(2,5);
+    for(let y=cy-r;y<=cy+r;y++) for(let x=cx-r;x<=cx+r;x++){
+      if((x-cx)**2+(y-cy)**2 <= r*r+ri(0,3)) set(x,y,T.GRASS);
+    }
+  }
+
+  // 3. 河流（横向 + 纵向蜿蜒）+ 多处湖泊
+  let ry = Math.floor(MAP_H*0.62);
+  for(let x=0;x<MAP_W;x++){
+    ry += ri(-1,1); ry=Math.max(4,Math.min(MAP_H-5,ry));
+    const w=ri(2,3);
+    for(let d=0;d<w;d++){ set(x,ry+d,T.WATER); }
+  }
+  let rx2 = Math.floor(MAP_W*0.34);
+  for(let y=0;y<MAP_H;y++){
+    rx2 += ri(-1,1); rx2=Math.max(4,Math.min(MAP_W-5,rx2));
+    const w=ri(2,3);
+    for(let d=0;d<w;d++){ set(rx2+d,y,T.WATER); }
+  }
+  for(let n=0;n<16;n++){
+    const cx=ri(8,MAP_W-9), cy=ri(6,MAP_H-7), rx=ri(3,6), rr=ri(2,4);
+    for(let y=cy-rr;y<=cy+rr;y++) for(let x=cx-rx;x<=cx+rx;x++){
+      if(((x-cx)/rx)**2+((y-cy)/rr)**2 <= 1+rnd()*0.3) set(x,y,T.WATER);
+    }
+  }
+  // 水边沙滩（带点纹）
+  for(let y=0;y<MAP_H;y++) for(let x=0;x<MAP_W;x++){
+    if(get(x,y)===T.SAND||get(x,y)===T.GRASS){
+      let near=false;
+      for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++) if(get(x+dx,y+dy)===T.WATER) near=true;
+      if(near) set(x,y,T.BEACH);
+    }
+  }
+
+  // 4. 成排的树丛（参考图风格：一片片圆树林）
+  for(let n=0;n<66;n++){
+    const cx=ri(2,MAP_W-3), cy=ri(2,MAP_H-3), w=ri(3,7), h=ri(2,4);
+    for(let y=cy;y<cy+h;y++) for(let x=cx;x<cx+w;x++){
+      if(get(x,y)===T.WATER) continue;
+      if(chance(0.82)) set(x,y,T.TREE);
+    }
+  }
+  // 5. 灌木丛
+  for(let n=0;n<165;n++){
+    const cx=ri(1,MAP_W-2), cy=ri(1,MAP_H-2);
+    if(get(cx,cy)===T.SAND||get(cx,cy)===T.GRASS||get(cx,cy)===T.BEACH){
+      if(chance(0.6)) set(cx,cy,T.BUSH);
+    }
+  }
+  // 6. 栅栏段（横/竖）
+  for(let n=0;n<42;n++){
+    const horiz=chance(0.5), len=ri(4,9);
+    let x=ri(2,MAP_W-len-2), y=ri(2,MAP_H-3);
+    for(let i=0;i<len;i++){
+      const px=horiz?x+i:x, py=horiz?y:y+i;
+      if(get(px,py)===T.SAND||get(px,py)===T.GRASS) set(px,py,T.FENCE);
+    }
+  }
+  // 7. 岩石、花
+  for(let n=0;n<225;n++){ const x=ri(1,MAP_W-2),y=ri(1,MAP_H-2);
+    if(get(x,y)===T.SAND||get(x,y)===T.GRASS) set(x,y, chance(0.45)?T.ROCK:T.FLOWER); }
+
+  // 8. 边界用树包住（防止走出地图边缘）
+  for(let x=0;x<MAP_W;x++){ set(x,0,T.TREE); set(x,1,T.TREE); set(x,MAP_H-1,T.TREE); set(x,MAP_H-2,T.TREE); }
+  for(let y=0;y<MAP_H;y++){ set(0,y,T.TREE); set(1,y,T.TREE); set(MAP_W-1,y,T.TREE); set(MAP_W-2,y,T.TREE); }
+
+  // 9. 选玩家出生点（找一块空地）
+  outer: for(let tries=0;tries<400;tries++){
+    const x=ri(4,MAP_W-5), y=ri(4,MAP_H-5);
+    if(walkableTile(x,y)){
+      // 周围也要空
+      let ok=true;
+      for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++) if(!walkableTile(x+dx,y+dy)) ok=false;
+      if(ok){ spawnPx={x:x*TILE+TILE/2, y:y*TILE+TILE/2}; break outer; }
+    }
+  }
+
+  // 10. 营地：清出一片空地 + 营火，记录为怪物 home
+  let placed=0;
+  for(let tries=0;tries<3000 && placed<20;tries++){
+    const x=ri(5,MAP_W-6), y=ri(5,MAP_H-6);
+    const dx=x*TILE-spawnPx.x, dy=y*TILE-spawnPx.y;
+    if(dx*dx+dy*dy < (TILE*9)**2) continue; // 离出生点远一点
+    // 检查近水/可清出
+    let bad=false;
+    for(let j=-2;j<=2;j++)for(let i=-2;i<=2;i++) if(get(x+i,y+j)===T.WATER) bad=true;
+    if(bad) continue;
+    // 清地为沙、放营地标记 + 营火
+    for(let j=-2;j<=2;j++)for(let i=-2;i<=2;i++){
+      if((i*i+j*j)<=5) set(x+i,y+j, T.SAND);
+    }
+    set(x,y,T.CAMP);
+    camps.push({tx:x,ty:y});
+    placed++;
+  }
+}
+function walkableTile(x,y){ return !SOLID[get(x,y)]; }
+buildMap();
+
+// ===================================================================
+//  绘制 — 像素精灵
+// ===================================================================
+const cv = document.getElementById('cv');
+cv.width=CW; cv.height=CH;
+const ctx = cv.getContext('2d');
+ctx.imageSmoothingEnabled=false;
+
+// 在世界坐标绘制矩形（自动减去相机）
+let camX=0, camY=0;
+function R(x,y,w,h,col){ ctx.fillStyle=col; ctx.fillRect(Math.round(x-camX),Math.round(y-camY),w,h); }
+// 屏幕坐标矩形
+function RS(x,y,w,h,col){ ctx.fillStyle=col; ctx.fillRect(x,y,w,h); }
+
+// --- 地块绘制（输入：格坐标）---
+function drawTile(tx,ty){
+  const x=tx*TILE, y=ty*TILE, t=get(tx,ty);
+  // 先铺底（除水/树等也要有底色）
+  let base = C.sand;
+  if(t===T.GRASS) base=C.grass;
+  else if(t===T.BEACH) base=C.beach;
+  R(x,y,TILE,TILE,base);
+
+  if(t===T.GRASS){ // 草纹
+    R(x+3,y+5,2,2,C.grassDk); R(x+10,y+3,2,2,C.grassDk); R(x+7,y+11,2,2,C.grassDk);
+  } else if(t===T.BEACH){ // 沙滩点纹
+    R(x+2,y+3,1,1,C.dot); R(x+8,y+2,1,1,C.dot); R(x+12,y+7,1,1,C.dot);
+    R(x+4,y+10,1,1,C.dot); R(x+10,y+12,1,1,C.dot);
+  } else if(t===T.SAND){
+    if(((tx*7+ty*13)%5)===0){ R(x+5,y+6,1,1,C.dot); R(x+11,y+10,1,1,C.dot); }
+  }
+  else if(t===T.WATER){
+    R(x,y,TILE,TILE,C.water);
+    R(x,y,TILE,3,C.waterDk);
+    // 波纹（随时间偏移）
+    const o=Math.floor(time*0.6 + tx*3)%TILE;
+    R(x+((o)%TILE),y+5,3,1,C.waterHi);
+    R(x+((o+8)%TILE),y+10,3,1,C.waterHi);
+  }
+  else if(t===T.FLOWER){
+    const col = ((tx+ty)%2)?C.flower:C.flowerY;
+    R(x+6,y+5,1,4,C.grassDk); R(x+5,y+4,3,3,col); R(x+6,y+5,1,1,'#fff');
+  }
+  else if(t===T.ROCK){
+    R(x+3,y+5,10,8,C.rockDk); R(x+4,y+5,8,7,C.rock); R(x+5,y+6,4,2,C.rockHi);
+    R(x+3,y+12,10,2,C.rockDk);
+  }
+  else if(t===T.BUSH){
+    R(x+2,y+5,12,8,C.bushDk); R(x+3,y+5,10,7,C.bush);
+    R(x+4,y+6,2,2,C.treeHi); R(x+9,y+7,2,2,C.treeHi);
+    R(x+2,y+12,12,2,C.bushDk);
+  }
+  else if(t===T.FENCE){
+    // 两根木桩
+    R(x+2,y+4,4,11,C.fenceDk); R(x+3,y+4,3,11,C.fence); R(x+3,y+4,3,2,'#b07a40');
+    R(x+10,y+4,4,11,C.fenceDk); R(x+11,y+4,3,11,C.fence); R(x+11,y+4,3,2,'#b07a40');
+    R(x+5,y+7,6,2,C.fenceDk); // 横档
+  }
+  else if(t===T.TREE){
+    // 圆树（参考图风格）
+    R(x+7,y+12,3,4,C.trunkDk); R(x+7,y+12,2,4,C.trunk);
+    R(x+2,y+3,12,10,C.treeDk);
+    R(x+3,y+2,10,10,C.treeLf);
+    R(x+4,y+3,3,3,C.treeHi); R(x+9,y+4,2,2,C.treeHi);
+    R(x+2,y+6,1,4,C.treeDk); R(x+13,y+6,1,4,C.treeDk);
+  }
+  else if(t===T.CAMP){
+    // 营火地面环
+    R(x+2,y+10,12,4,'#caa86a');
+    drawCampfire(x+TILE/2, y+TILE/2+2);
+  }
+}
+
+function drawCampfire(cx,cy){
+  // 石圈
+  R(cx-7,cy+2,14,3,'#8a8a92'); R(cx-7,cy+2,14,1,'#aab0b8');
+  // 木柴
+  R(cx-5,cy,10,2,C.logDk); R(cx-4,cy,8,2,C.log);
+  // 火焰（闪烁）
+  const f=Math.floor(time*0.25)%2;
+  R(cx-3,cy-6+f,6,7,C.flame3);
+  R(cx-2,cy-8+f,4,7,C.flame2);
+  R(cx-1,cy-9+f,2,5,C.flame1);
+}
+
+// --- 玩家精灵 ---
+// dir: 0下 1上 2左 3右 ; frame 0/1 行走 ; atk 攻击进度0..1或null
+function drawPlayer(p){
+  const sx=Math.round(p.x-camX-8), sy=Math.round(p.y-camY-13);
+  const dir=p.dir, walk=(p.moving? (Math.floor(p.animT/8)%2):0);
+  const bob = walk?0:0;
+  ctx.save();
+  // i-frame 闪烁
+  if(p.inv>0 && Math.floor(p.inv/4)%2===0){ ctx.globalAlpha=0.35; }
+
+  const o=C.outline, sk=C.skin, skd=C.skinDk, hr=C.hair, hrd=C.hairDk,
+        tu=C.tunic, tud=C.tunicDk, bt=C.boot;
+  const leg = walk?2:0;
+
+  function rect(dx,dy,w,h,c){ ctx.fillStyle=c; ctx.fillRect(sx+dx,sy+dy,w,h); }
+
+  if(dir===0){ // 下
+    rect(4,1,8,4,hr); rect(4,1,8,1,hrd); rect(3,2,1,3,hrd); rect(12,2,1,3,hrd);
+    rect(5,4,6,4,sk); rect(5,7,6,1,skd);
+    rect(6,5,1,1,C.eye); rect(9,5,1,1,C.eye);
+    rect(4,8,8,6,tu); rect(4,8,8,1,tud); rect(4,11,8,1,tud);
+    rect(3,8,1,4,sk); rect(12,8,1,4,sk); // 手
+    rect(5,14,3,2-( -leg),bt); rect(8,14,3,2,bt);
+    rect(5,14,2,leg?1:2,bt); rect(9,14,2,leg?2:1,bt);
+    // 盾（右侧）
+    rect(12,9,3,4,C.shieldEdge); rect(12,9,2,4,C.shield); rect(12,10,1,2,C.shieldBlue);
+    if(p.atk!==null) drawSword(rect,dir,p.atk);
+  } else if(dir===1){ // 上（背面）
+    rect(4,1,8,6,hr); rect(4,1,8,1,hrd); rect(3,3,1,4,hrd); rect(12,3,1,4,hrd);
+    rect(4,7,8,7,tu); rect(4,7,8,1,tud);
+    rect(3,8,1,4,sk); rect(12,8,1,4,sk);
+    rect(5,14,3,2,bt); rect(8,14,3,2,bt);
+    rect(5,14,2,leg?1:2,bt); rect(9,14,2,leg?2:1,bt);
+    rect(2,9,3,4,C.shieldEdge); rect(3,9,2,4,C.shield); // 背后盾
+    if(p.atk!==null) drawSword(rect,dir,p.atk);
+  } else { // 侧面 (2左/3右)  绘制为朝右再翻转
+    ctx.save();
+    if(dir===2){ ctx.translate(sx*2+16,0); ctx.scale(-1,1); }
+    rect(4,1,7,4,hr); rect(4,1,7,1,hrd); rect(11,3,1,3,hr);
+    rect(8,4,4,4,sk); rect(8,7,4,1,skd);
+    rect(10,5,1,1,C.eye);
+    rect(4,8,7,6,tu); rect(4,8,7,1,tud);
+    rect(11,9,1,3,sk); // 前臂
+    rect(5,14,3,2,bt); rect(8,14,3,2,bt);
+    rect(5,14,2,leg?2:1,bt); rect(8,14,3,leg?1:2,bt);
+    rect(3,9,2,4,C.shieldEdge); rect(3,9,1,4,C.shield); // 后背盾
+    if(p.atk!==null) drawSword(rect,3,p.atk);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+function drawSword(rect,dir,prog){
+  // prog 0..1 ; 0.2-0.8 时剑伸出
+  const ext = Math.sin(Math.min(1,prog)*Math.PI); // 0->1->0
+  const len = Math.round(2+ext*9);
+  const sw=C.sword, swd=C.swordDk, hi=C.hilt;
+  if(dir===0){ rect(7,13,2,len,sw); rect(7,13,1,len,swd); rect(6,12,4,1,hi); }
+  else if(dir===1){ rect(7,1-len,2,len,sw); rect(7,1-len,1,len,swd); rect(6,1,4,1,hi); }
+  else { rect(12,7,len,2,sw); rect(12,7,len,1,swd); rect(11,6,1,4,hi); }
+}
+
+// --- 怪物精灵（红色小怪）---
+function drawMonster(m){
+  const sx=Math.round(m.x-camX-7), sy=Math.round(m.y-camY-12);
+  const walk=(m.state==='chase'||m.state==='patrol');
+  const wob = walk? (Math.floor(m.animT/7)%2) : 0;
+  const sit = (m.state==='rest');
+  ctx.save();
+  if(m.hurt>0 && Math.floor(m.hurt/3)%2===0) ctx.globalAlpha=0.5;
+  function rect(dx,dy,w,h,c){ ctx.fillStyle=c; ctx.fillRect(sx+dx,sy+dy,w,h); }
+  const by = sit?3:wob; // 休息时压低
+  // 身体
+  rect(2,4+by,10,9-by,C.monDk);
+  rect(3,4+by,8,8-by,C.monBody);
+  rect(4,5+by,3,2,C.monHi);
+  // 角
+  rect(2,2+by,2,3,C.monDk); rect(10,2+by,2,3,C.monDk);
+  // 眼
+  rect(4,7+by,2,2,C.monEye); rect(8,7+by,2,2,C.monEye);
+  const look = m.facing<0?0:1;
+  rect(4+look,8+by,1,1,C.monPupil); rect(8+look,8+by,1,1,C.monPupil);
+  // 怒眉
+  rect(4,6+by,2,1,C.monDk); rect(8,6+by,2,1,C.monDk);
+  // 脚
+  if(!sit){ rect(3,13,3,2,C.monDk); rect(8,13,3,2,C.monDk);
+    rect(3,13,3,wob?1:2,C.monDk); rect(8,13,3,wob?2:1,C.monDk); }
+  else { rect(2,12,10,2,C.monDk); }
+  // 攻击预警闪光
+  if(m.atkWind>0){ ctx.globalAlpha=0.6; rect(-1,2,16,14,'#ffefa0'); }
+  ctx.restore();
+}
+
+function drawHeartPickup(h){
+  const sx=Math.round(h.x-camX-4), sy=Math.round(h.y-camY-4 - h.bob);
+  function rect(dx,dy,w,h2,c){ ctx.fillStyle=c; ctx.fillRect(sx+dx,sy+dy,w,h2); }
+  rect(1,1,3,2,C.heartF); rect(5,1,3,2,C.heartF);
+  rect(0,2,9,3,C.heartF); rect(1,5,7,1,C.heartF); rect(2,6,5,1,C.heartF);
+  rect(3,7,3,1,C.heartF); rect(1,2,2,1,C.heartHi);
+}
+
+// ===================================================================
+//  实体 — 玩家 / 怪物 / 拾取物
+// ===================================================================
+const player = {
+  x:spawnPx.x, y:spawnPx.y, vx:0, vy:0, spd:1.15,
+  dir:0, moving:false, animT:0,
+  hp:12, maxhp:12,            // 半心为单位 -> 6颗心
+  atk:null, atkCd:0,          // 挥剑进度 / 冷却
+  inv:0,                      // 无敌帧
+  knock:0, kx:0, ky:0,        // 击退（必须初始化为0，否则 knock<=0 判定失败导致无法移动）
+  dead:false, deadT:0,
+  hbW:10, hbH:9               // 脚部碰撞盒
+};
+
+const monsters = [];
+function spawnMonster(homeX,homeY,wander){
+  monsters.push({
+    x:homeX, y:homeY, homeX, homeY, vx:0, vy:0, spd:0.55,
+    state:'rest', stateT:ri(40,140), facing:1, animT:0,
+    hp:3, hurt:0, knock:0, kx:0, ky:0,
+    atkCd:0, atkWind:0,
+    wanderR: wander? TILE*7 : TILE*4,   // 巡逻半径
+    detect: TILE*5.2,                   // 发现玩家距离
+    leash: TILE*9,                      // 脱战距离
+    target:null,
+    hbW:9, hbH:8
+  });
+}
+// 营地怪
+camps.forEach(c=>{
+  const n=ri(2,3);
+  for(let i=0;i<n;i++){
+    const ang=rnd()*Math.PI*2, r=TILE*1.6;
+    spawnMonster(c.tx*TILE+TILE/2+Math.cos(ang)*r, c.ty*TILE+TILE/2+Math.sin(ang)*r, false);
+  }
+});
+// 野外散怪
+for(let i=0;i<20;i++){
+  for(let t=0;t<60;t++){
+    const x=ri(4,MAP_W-5),y=ri(4,MAP_H-5);
+    if(walkableTile(x,y)){ const px=x*TILE+8,py=y*TILE+8;
+      const dx=px-spawnPx.x,dy=py-spawnPx.y;
+      if(dx*dx+dy*dy>(TILE*7)**2){ spawnMonster(px,py,true); break; } }
+  }
+}
+
+const pickups = [];   // 掉落的心
+function dropHeart(x,y){ if(chance(0.4)) pickups.push({x,y,bob:0,t:0,life:600}); }
+
+// ===================================================================
+//  碰撞（与地块）
+// ===================================================================
+function tileSolidAt(px,py){
+  const tx=Math.floor(px/TILE), ty=Math.floor(py/TILE);
+  return !!SOLID[get(tx,ty)];
+}
+// 用脚部盒 (cx,cy 中心, w,h) 检测是否撞墙
+function boxHits(cx,cy,w,h){
+  const x0=cx-w/2, x1=cx+w/2-1, y0=cy-h/2, y1=cy+h/2-1;
+  return tileSolidAt(x0,y0)||tileSolidAt(x1,y0)||tileSolidAt(x0,y1)||tileSolidAt(x1,y1)||
+         tileSolidAt((x0+x1)/2,y1)||tileSolidAt((x0+x1)/2,y0);
+}
+// 沿单轴移动并解算（脚部盒中心在 ex, ey+offset）
+function moveEntity(e, dx, dy){
+  const footY = e.y+4; // 碰撞盒偏向脚下
+  // X
+  if(dx!==0){
+    const nx=e.x+dx;
+    if(!boxHits(nx, footY, e.hbW, e.hbH)) e.x=nx;
+    else { // 逐像素逼近
+      const step=Math.sign(dx);
+      while(!boxHits(e.x+step, footY, e.hbW, e.hbH) && Math.abs(e.x+step-(e.x))<Math.abs(dx)) e.x+=step;
+    }
+  }
+  // Y
+  if(dy!==0){
+    const ny=e.y+dy, fy=ny+4;
+    if(!boxHits(e.x, fy, e.hbW, e.hbH)) e.y=ny;
+    else { const step=Math.sign(dy);
+      while(!boxHits(e.x, e.y+4+step, e.hbW, e.hbH) && Math.abs(e.y+step-(e.y))<Math.abs(dy)) e.y+=step; }
+  }
+  // 世界边界
+  e.x=Math.max(TILE, Math.min(WORLD_W-TILE, e.x));
+  e.y=Math.max(TILE, Math.min(WORLD_H-TILE, e.y));
+}
+
+// ===================================================================
+//  输入
+// ===================================================================
+const keys={};
+const KMAP={ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left',ArrowRight:'right',
+  w:'up',s:'down',a:'left',d:'right',W:'up',S:'down',A:'left',D:'right'};
+addEventListener('keydown',e=>{
+  if(KMAP[e.key]){ keys[KMAP[e.key]]=true; e.preventDefault(); }
+  if(e.key===' '||e.key==='j'||e.key==='J'||e.key==='k'||e.key==='K'){ doAttack(); e.preventDefault(); }
+});
+addEventListener('keyup',e=>{ if(KMAP[e.key]) keys[KMAP[e.key]]=false; });
+
+function bindTouch(id,dir){
+  const el=document.getElementById(id);
+  const on=e=>{ keys[dir]=true; e.preventDefault(); };
+  const off=e=>{ keys[dir]=false; e.preventDefault(); };
+  el.addEventListener('touchstart',on,{passive:false});
+  el.addEventListener('touchend',off,{passive:false});
+  el.addEventListener('touchcancel',off,{passive:false});
+}
+bindTouch('up','up'); bindTouch('down','down'); bindTouch('left','left'); bindTouch('right','right');
+const atkBtn=document.getElementById('atk');
+atkBtn.addEventListener('touchstart',e=>{ doAttack(); e.preventDefault(); },{passive:false});
+
+let hintFaded=false;
+function fadeHint(){ if(hintFaded) return; hintFaded=true;
+  const h=document.getElementById('hint'); h.style.opacity='0'; setTimeout(()=>h.remove(),700); }
+
+// ===================================================================
+//  战斗
+// ===================================================================
+function doAttack(){
+  if(player.atkCd>0 || player.atk!==null || player.dead) return;
+  player.atk=0; player.atkCd=26;
+  fadeHint();
+}
+// 剑命中盒
+function swordHitbox(){
+  const reach=15, w=14;
+  if(player.dir===0) return {x:player.x-w/2, y:player.y+2, w, h:reach};
+  if(player.dir===1) return {x:player.x-w/2, y:player.y-reach-2, w, h:reach};
+  if(player.dir===2) return {x:player.x-reach-2, y:player.y-6, w:reach, h:w};
+  return {x:player.x+2, y:player.y-6, w:reach, h:w};
+}
+function rectsOverlap(a,bx,by,bw,bh){
+  return a.x < bx+bw && a.x+a.w > bx && a.y < by+bh && a.y+a.h > by;
+}
+
+function hurtPlayer(dmg, fromX, fromY){
+  if(player.inv>0||player.dead) return;
+  player.hp-=dmg; player.inv=70;
+  // 击退
+  const a=Math.atan2(player.y-fromY, player.x-fromX);
+  player.kx=Math.cos(a)*3.2; player.ky=Math.sin(a)*3.2; player.knock=10;
+  flash(220,60,60,0.28);
+  if(player.hp<=0){ player.hp=0; player.dead=true; deathT=0; }
+}
+
+// 屏幕闪烁
+let flashCol=null, flashA=0;
+function flash(r,g,b,a){ flashCol=`rgba(${r},${g},${b},`; flashA=a; }
+
+// ===================================================================
+//  更新
+// ===================================================================
+let time=0;
+let deathT=-1;
+
+// ---------- 昼夜系统 ----------
+const DAY_LEN = 6000;          // 一整天的帧数（≈100秒）
+let dayTime = 0.30;            // 0~1，从清晨开始
+let dayCount = 1;
+let nightFactor = 0;          // 0白天 -> 1深夜（影响怪物感知）
+// 关键帧：{t, 颜色[r,g,b], 暗度alpha}
+const SKY = [
+  {t:0.00, c:[10,16,46],  a:0.62},  // 午夜
+  {t:0.20, c:[18,24,58],  a:0.58},  // 黎明前
+  {t:0.26, c:[255,150,90], a:0.32}, // 黎明（暖橙）
+  {t:0.33, c:[255,210,150],a:0.06}, // 清晨
+  {t:0.50, c:[255,255,255],a:0.00}, // 正午
+  {t:0.68, c:[255,240,200],a:0.05}, // 午后
+  {t:0.78, c:[255,120,60], a:0.34}, // 黄昏
+  {t:0.85, c:[120,70,120], a:0.48}, // 暮色
+  {t:0.92, c:[30,34,80],   a:0.58}, // 入夜
+  {t:1.00, c:[10,16,46],   a:0.62}  // 午夜（循环）
+];
+function skyAt(t){
+  for(let i=0;i<SKY.length-1;i++){
+    const a=SKY[i], b=SKY[i+1];
+    if(t>=a.t && t<=b.t){
+      const k=(t-a.t)/(b.t-a.t||1);
+      return { c:[ a.c[0]+(b.c[0]-a.c[0])*k, a.c[1]+(b.c[1]-a.c[1])*k, a.c[2]+(b.c[2]-a.c[2])*k ],
+               a: a.a+(b.a-a.a)*k };
+    }
+  }
+  return {c:SKY[0].c, a:SKY[0].a};
+}
+function phaseName(t){
+  if(t<0.22) return '夜晚'; if(t<0.30) return '黎明';
+  if(t<0.46) return '清晨'; if(t<0.56) return '正午';
+  if(t<0.72) return '午后'; if(t<0.82) return '黄昏';
+  if(t<0.90) return '暮色'; return '夜晚';
+}
+
+function update(){
+  time++;
+
+  // ---- 昼夜推进 ----
+  dayTime += 1/DAY_LEN;
+  if(dayTime>=1){ dayTime-=1; dayCount++; }
+  // 夜晚强度：仅在偏暗时段升高，用于增强怪物感知
+  const dark = skyAt(dayTime).a;
+  nightFactor = Math.max(0, Math.min(1, (dark-0.30)/0.32));
+
+  // ---- 玩家死亡 ----
+  if(player.dead){
+    deathT++;
+    if(deathT>90){ // 复活
+      player.dead=false; player.hp=player.maxhp; player.inv=80;
+      player.x=spawnPx.x; player.y=spawnPx.y; player.knock=0;
+    }
+    updateCamera(); return;
+  }
+
+  // ---- 玩家移动 ----
+  let mx=0,my=0;
+  if(keys.left) mx-=1; if(keys.right) mx+=1;
+  if(keys.up) my-=1; if(keys.down) my+=1;
+  player.moving = (mx||my)!==0 && player.knock<=0;
+  if(player.moving){ fadeHint();
+    if(my<0) player.dir=1; else if(my>0) player.dir=0;
+    if(mx<0) player.dir=2; else if(mx>0) player.dir=3;
+    const len=Math.hypot(mx,my)||1;
+    moveEntity(player, mx/len*player.spd, my/len*player.spd);
+    player.animT++;
+  }
+  // 击退位移
+  if(player.knock>0){ moveEntity(player, player.kx, player.ky); player.kx*=0.8; player.ky*=0.8; player.knock--; }
+  // 攻击推进
+  if(player.atk!==null){ player.atk+=0.06; if(player.atk>=1) player.atk=null; }
+  if(player.atkCd>0) player.atkCd--;
+  if(player.inv>0) player.inv--;
+
+  // 剑命中怪物（仅在伸出阶段）
+  if(player.atk!==null && player.atk>0.15 && player.atk<0.7){
+    const hb=swordHitbox();
+    for(const m of monsters){
+      if(m.dead||m.hurt>0) continue;
+      if(rectsOverlap(hb, m.x-6,m.y-6,12,12)){
+        m.hp-=1; m.hurt=18;
+        const a=Math.atan2(m.y-player.y,m.x-player.x);
+        m.kx=Math.cos(a)*4; m.ky=Math.sin(a)*4; m.knock=12;
+        m.state='chase'; m.target=player; // 被打后激怒
+        if(m.hp<=0){ m.dead=true; dropHeart(m.x,m.y); flash(255,255,255,0.18); }
+      }
+    }
+  }
+
+  // ---- 拾取物 ----
+  for(const h of pickups){
+    h.t++; h.bob=Math.sin(h.t*0.12)*2; h.life--;
+    const dx=h.x-player.x, dy=h.y-player.y;
+    if(dx*dx+dy*dy < 100){ h.got=true; player.hp=Math.min(player.maxhp,player.hp+2); flash(120,255,140,0.18); }
+  }
+  for(let i=pickups.length-1;i>=0;i--) if(pickups[i].got||pickups[i].life<=0) pickups.splice(i,1);
+
+  // ---- 怪物 AI ----
+  for(const m of monsters){
+    if(m.dead) continue;
+    m.animT++;
+    if(m.hurt>0) m.hurt--;
+    if(m.atkCd>0) m.atkCd--;
+    if(m.atkWind>0){ m.atkWind--;
+      if(m.atkWind===0){ // 出招：若仍贴近则造成伤害
+        const dx=player.x-m.x, dy=player.y-m.y;
+        if(dx*dx+dy*dy < (TILE*1.1)**2) hurtPlayer(2, m.x, m.y);
+      }
+    }
+    // 击退优先
+    if(m.knock>0){ moveEntity(m, m.kx, m.ky); m.kx*=0.78; m.ky*=0.78; m.knock--; continue; }
+    if(m.hurt>0) continue; // 受击僵直
+
+    const dpx=player.x-m.x, dpy=player.y-m.y;
+    const distP=Math.hypot(dpx,dpy);
+    const dhx=m.homeX-m.x, dhy=m.homeY-m.y, distH=Math.hypot(dhx,dhy);
+
+    // 状态切换（夜晚感知范围扩大）
+    const detectR = m.detect*(1+0.7*nightFactor);
+    if(!player.dead && distP < detectR && distH < m.leash){ m.state='chase'; m.target=player; }
+
+    if(m.state==='chase'){
+      if(player.dead || distP > m.leash || distH > m.leash+TILE*2){ m.state='return'; m.target=null; }
+      else if(distP < TILE*1.05){ // 进入攻击距离
+        if(m.atkCd<=0){ m.atkWind=14; m.atkCd=70; } // 预警后出招
+        // 攻击时不再前冲
+      } else {
+        const len=distP||1; m.facing=Math.sign(dpx)||m.facing;
+        moveEntity(m, dpx/len*m.spd*1.6, dpy/len*m.spd*1.6);
+      }
+    }
+    else if(m.state==='return'){
+      if(distH < TILE*0.6){ m.state='rest'; m.stateT=ri(50,160); }
+      else { const len=distH||1; m.facing=Math.sign(dhx)||m.facing;
+        moveEntity(m, dhx/len*m.spd*1.3, dhy/len*m.spd*1.3); }
+    }
+    else if(m.state==='rest'){
+      m.stateT--;
+      if(m.stateT<=0){ m.state='patrol';
+        const ang=rnd()*Math.PI*2, r=m.wanderR*(0.4+rnd()*0.6);
+        m.target={x:m.homeX+Math.cos(ang)*r, y:m.homeY+Math.sin(ang)*r};
+        m.stateT=ri(60,160);
+      }
+    }
+    else if(m.state==='patrol'){
+      const tx=m.target?m.target.x:m.homeX, ty=m.target?m.target.y:m.homeY;
+      const dx=tx-m.x, dy=ty-m.y, d=Math.hypot(dx,dy);
+      m.stateT--;
+      if(d<3 || m.stateT<=0){ // 到点或超时 -> 回营休息
+        m.state='rest'; m.stateT=ri(60,200);
+      } else { m.facing=Math.sign(dx)||m.facing;
+        moveEntity(m, dx/d*m.spd, dy/d*m.spd); }
+    }
+  }
+  // 清理死亡怪（被击杀即移除）
+  for(let i=monsters.length-1;i>=0;i--) if(monsters[i].dead) monsters.splice(i,1);
+
+  updateCamera();
+}
+
+function updateCamera(){
+  camX = Math.round(player.x - CW/2);
+  camY = Math.round(player.y - CH/2);
+  camX = Math.max(0, Math.min(WORLD_W-CW, camX));
+  camY = Math.max(0, Math.min(WORLD_H-CH, camY));
+}
+
+// ===================================================================
+//  渲染
+// ===================================================================
+function render(){
+  // 背景
+  ctx.fillStyle=C.sand; ctx.fillRect(0,0,CW,CH);
+
+  // 可见地块范围
+  const tx0=Math.floor(camX/TILE), ty0=Math.floor(camY/TILE);
+  const tx1=tx0+VIEW_W+1, ty1=ty0+VIEW_H+1;
+
+  // 先画地面层（非树/非营火）
+  for(let ty=ty0;ty<=ty1;ty++) for(let tx=tx0;tx<=tx1;tx++){
+    const t=get(tx,ty);
+    if(t===T.TREE) { // 树先画底草沙
+      R(tx*TILE,ty*TILE,TILE,TILE, get(tx,ty+1)===T.GRASS?C.grass:C.sand);
+      continue;
+    }
+    drawTile(tx,ty);
+  }
+
+  // 收集需要按 y 排序的对象（玩家、怪、树冠、拾取）
+  const drawables=[];
+  for(let ty=ty0;ty<=ty1;ty++) for(let tx=tx0;tx<=tx1;tx++){
+    if(get(tx,ty)===T.TREE) drawables.push({y:ty*TILE+TILE-2, kind:'tree', tx,ty});
+  }
+  for(const h of pickups) drawables.push({y:h.y, kind:'heart', ref:h});
+  for(const m of monsters) if(!m.dead) drawables.push({y:m.y, kind:'mon', ref:m});
+  drawables.push({y:player.y, kind:'player'});
+  drawables.sort((a,b)=>a.y-b.y);
+
+  for(const d of drawables){
+    if(d.kind==='tree') drawTile(d.tx,d.ty);
+    else if(d.kind==='heart') drawHeartPickup(d.ref);
+    else if(d.kind==='mon') drawMonster(d.ref);
+    else if(d.kind==='player') drawPlayer(player);
+  }
+
+  // ---- 昼夜光照层（玩家周围有光晕，夜里像举着火把）----
+  const sky = skyAt(dayTime);
+  if(sky.a > 0.02){
+    const r=Math.round(sky.c[0]), g=Math.round(sky.c[1]), b=Math.round(sky.c[2]);
+    const px=player.x-camX, py=player.y-camY;
+    const grad=ctx.createRadialGradient(px,py,16, px,py,132);
+    grad.addColorStop(0,   `rgba(${r},${g},${b},${(sky.a*0.20).toFixed(3)})`);
+    grad.addColorStop(0.55,`rgba(${r},${g},${b},${(sky.a*0.68).toFixed(3)})`);
+    grad.addColorStop(1,   `rgba(${r},${g},${b},${sky.a.toFixed(3)})`);
+    ctx.fillStyle=grad; ctx.fillRect(0,0,CW,CH);
+  }
+
+  // 闪烁层
+  if(flashA>0){ ctx.fillStyle=flashCol+flashA+')'; ctx.fillRect(0,0,CW,CH); flashA*=0.86; if(flashA<0.01) flashA=0; }
+
+  // 死亡遮罩
+  if(player.dead){ ctx.fillStyle='rgba(20,0,0,'+Math.min(0.7,deathT/90)+')'; ctx.fillRect(0,0,CW,CH);
+    ctx.fillStyle='#ffce4a'; ctx.font='bold 16px "Courier New"'; ctx.textAlign='center';
+    ctx.fillText('倒下了…', CW/2, CH/2-4); ctx.font='9px "Courier New"';
+    ctx.fillStyle='#ffd9a0'; ctx.fillText('复活中', CW/2, CH/2+12); ctx.textAlign='left';
+  }
+
+  drawHUD();
+}
+
+function drawHUD(){
+  // 心
+  const n=player.maxhp/2;
+  for(let i=0;i<n;i++){
+    const hx=10+i*14, hy=10, val=player.hp-i*2; // 2满 1半 0空
+    drawHeartUI(hx,hy, val>=2?2:(val===1?1:0));
+  }
+  // 小地图
+  drawMinimap();
+  // 怪物计数
+  ctx.fillStyle='rgba(10,16,24,.55)'; ctx.fillRect(CW-78,8,70,16);
+  ctx.fillStyle='#ffb0a0'; ctx.font='10px "Courier New"'; ctx.textAlign='left';
+  ctx.fillText('怪物 '+monsters.length, CW-72, 19);
+
+  // 昼夜指示
+  const px2=CW-78, py2=28;
+  ctx.fillStyle='rgba(10,16,24,.55)'; ctx.fillRect(px2,py2,70,18);
+  const isNight = nightFactor>0.4 || dayTime<0.24 || dayTime>0.86;
+  const ix=px2+11, iy=py2+9;
+  if(isNight){ // 月亮
+    ctx.fillStyle='#dfe6f5'; ctx.beginPath(); ctx.arc(ix,iy,5,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='rgba(10,16,24,.85)'; ctx.beginPath(); ctx.arc(ix+2.6,iy-1.4,5,0,Math.PI*2); ctx.fill();
+  } else { // 太阳
+    ctx.strokeStyle='#ffd23f'; ctx.lineWidth=1;
+    for(let k=0;k<8;k++){ const a=k*Math.PI/4;
+      ctx.beginPath(); ctx.moveTo(ix+Math.cos(a)*6,iy+Math.sin(a)*6);
+      ctx.lineTo(ix+Math.cos(a)*8,iy+Math.sin(a)*8); ctx.stroke(); }
+    ctx.fillStyle='#ffd23f'; ctx.beginPath(); ctx.arc(ix,iy,4,0,Math.PI*2); ctx.fill();
+  }
+  ctx.fillStyle='#cfe0ff'; ctx.font='9px "Courier New"';
+  ctx.fillText('第'+dayCount+'天·'+phaseName(dayTime), px2+22, py2+12);
+}
+function drawHeartUI(x,y,state){
+  const f = state===2? C.heartF : (state===1?C.heartF:C.heartE);
+  const e = C.heartE;
+  function blk(dx,dy,w,h,c){ ctx.fillStyle=c; ctx.fillRect(x+dx,y+dy,w,h); }
+  // 外框（空心底）
+  const drawHeart=(col)=>{ blk(2,1,2,1,col); blk(7,1,2,1,col); blk(1,2,9,3,col);
+    blk(2,5,7,1,col); blk(3,6,5,1,col); blk(4,7,3,1,col); };
+  drawHeart(e); // 底
+  if(state>=1){
+    // 半心：只画左半
+    ctx.save();
+    if(state===1){ ctx.beginPath(); ctx.rect(x,y,5,9); ctx.clip(); }
+    drawHeart(f); blk(2,2,2,1,C.heartHi);
+    ctx.restore();
+  }
+}
+
+let miniTerrain=null;
+function buildMiniTerrain(){
+  const cvs=document.createElement('canvas'); cvs.width=MAP_W; cvs.height=MAP_H;
+  const c=cvs.getContext('2d');
+  for(let y=0;y<MAP_H;y++) for(let x=0;x<MAP_W;x++){
+    const t=get(x,y); let col;
+    if(t===T.WATER) col='#3a6ed8'; else if(t===T.TREE) col='#3f8f2a';
+    else if(t===T.GRASS) col='#7bbf48'; else if(t===T.ROCK||t===T.FENCE) col='#8a7050';
+    else if(t===T.BEACH) col='#e3d4a6'; else col='#d8c489';
+    c.fillStyle=col; c.fillRect(x,y,1,1);
+  }
+  miniTerrain=cvs;
+}
+function drawMinimap(){
+  if(!miniTerrain) buildMiniTerrain();
+  const mw=86, mh=Math.round(mw*MAP_H/MAP_W); const ox=CW-mw-8, oy=CH-mh-8;
+  ctx.fillStyle='rgba(10,16,24,.7)'; ctx.fillRect(ox-2,oy-2,mw+4,mh+4);
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(miniTerrain, 0,0,MAP_W,MAP_H, ox,oy,mw,mh);
+  const sxv=mw/MAP_W, syv=mh/MAP_H;
+  // 营地
+  ctx.fillStyle='#ff8a2a'; for(const cp of camps) ctx.fillRect(ox+cp.tx*sxv-1, oy+cp.ty*syv-1, 2,2);
+  // 怪
+  ctx.fillStyle='#ff3a2a'; for(const m of monsters) if(!m.dead) ctx.fillRect(ox+(m.x/TILE)*sxv, oy+(m.y/TILE)*syv,1,1);
+  // 玩家
+  ctx.fillStyle='#fff'; ctx.fillRect(ox+(player.x/TILE)*sxv-1, oy+(player.y/TILE)*syv-1, 3,3);
+  // 夜晚给小地图压一层暗色
+  if(nightFactor>0.05){ ctx.fillStyle='rgba(10,16,46,'+(nightFactor*0.45).toFixed(2)+')'; ctx.fillRect(ox,oy,mw,mh); }
+}
+
+// ===================================================================
+//  主循环 + 自适应缩放
+// ===================================================================
+function loop(){ update(); render(); requestAnimationFrame(loop); }
+
+function fit(){
+  const pad=8;
+  const sw=window.innerWidth-pad*2, sh=window.innerHeight-pad*2;
+  let s=Math.min(sw/CW, sh/CH);
+  s=Math.max(1, Math.floor(s)); // 整数缩放保持像素清晰
+  if(s*CW>sw||s*CH>sh){ s=Math.min(sw/CW,sh/CH); } // 太小则用小数
+  cv.style.width=(CW*s)+'px'; cv.style.height=(CH*s)+'px';
+}
+addEventListener('resize',fit); fit();
+loop();
+</script>
+</body>
+</html>
