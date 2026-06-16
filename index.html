@@ -28,17 +28,24 @@
 
   /* ---- 移动端触控 ---- */
   #touch { position:absolute; inset:0; pointer-events:none; }
-  .pad { position:absolute; bottom:24px; pointer-events:auto; }
-  #dpad { left:24px; width:138px; height:138px; }
-  .dbtn { position:absolute; width:46px; height:46px; background:rgba(30,40,55,.55);
-    border:2px solid rgba(150,180,210,.5); border-radius:8px; }
-  .dbtn:active { background:rgba(120,170,255,.6); }
-  #up{ left:46px; top:0 } #down{ left:46px; top:92px }
-  #left{ left:0; top:46px } #right{ left:92px; top:46px }
-  #atk { right:30px; bottom:30px; width:78px; height:78px; border-radius:50%;
+  .pad { position:absolute; pointer-events:auto; }
+  /* 虚拟摇杆 */
+  #stick { left:14px; bottom:14px; width:160px; height:160px; touch-action:none; }
+  #stickBase { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:120px; height:120px; border-radius:50%;
+    background:radial-gradient(circle at 50% 50%, rgba(40,55,75,.32), rgba(20,30,45,.46));
+    border:2px solid rgba(150,180,210,.45); box-shadow:inset 0 0 14px rgba(0,0,0,.35); }
+  #stickKnob { position:absolute; left:50%; top:50%; width:54px; height:54px;
+    margin:-27px 0 0 -27px; border-radius:50%; transform:translate(0,0);
+    background:radial-gradient(circle at 36% 30%, rgba(170,210,255,.96), rgba(70,110,180,.92));
+    border:2px solid rgba(225,238,255,.82); box-shadow:0 2px 8px rgba(0,0,0,.4);
+    pointer-events:none; transition:transform .04s linear; }
+  #stick.dragging #stickKnob { transition:none; }
+  #atk { right:30px; bottom:30px; width:80px; height:80px; border-radius:50%;
     background:radial-gradient(circle at 35% 30%,#ff8a5c,#c83a2a);
     border:3px solid rgba(255,220,200,.7); color:#fff; font-weight:bold; font-size:22px;
-    display:flex; align-items:center; justify-content:center; pointer-events:auto; }
+    display:flex; align-items:center; justify-content:center; pointer-events:auto;
+    touch-action:none; }
   #atk:active { transform:scale(.92); }
   @media (hover:hover) and (pointer:fine){ #touch{ display:none } }
 </style>
@@ -50,9 +57,9 @@
     <div id="banner">二维塞尔达雏形 <small>PROTOTYPE</small></div>
     <div id="hint">方向键 / WASD 移动 · J / 空格 挥剑 · 昼夜交替，夜里怪物更警觉 · 探索大地图清理营地</div>
     <div id="touch">
-      <div id="dpad" class="pad">
-        <div class="dbtn" id="up"></div><div class="dbtn" id="down"></div>
-        <div class="dbtn" id="left"></div><div class="dbtn" id="right"></div>
+      <div id="stick" class="pad">
+        <div id="stickBase"></div>
+        <div id="stickKnob"></div>
       </div>
       <div id="atk" class="pad">劍</div>
     </div>
@@ -506,15 +513,53 @@ addEventListener('keydown',e=>{
 });
 addEventListener('keyup',e=>{ if(KMAP[e.key]) keys[KMAP[e.key]]=false; });
 
-function bindTouch(id,dir){
-  const el=document.getElementById(id);
-  const on=e=>{ keys[dir]=true; e.preventDefault(); };
-  const off=e=>{ keys[dir]=false; e.preventDefault(); };
-  el.addEventListener('touchstart',on,{passive:false});
-  el.addEventListener('touchend',off,{passive:false});
-  el.addEventListener('touchcancel',off,{passive:false});
+// ---- 虚拟摇杆（模拟量）----
+const joy = { active:false, id:null, cx:0, cy:0, dx:0, dy:0 };
+const JOY_MAXR = 44;     // 摇杆头最大位移(px)
+const JOY_DEAD = 0.16;   // 死区，避免轻触抖动
+const stick = document.getElementById('stick');
+const knob  = document.getElementById('stickKnob');
+const base  = document.getElementById('stickBase');
+
+function joyStart(e){
+  const t = e.changedTouches[0];
+  joy.active=true; joy.id=t.identifier;
+  const r = base.getBoundingClientRect();
+  joy.cx = r.left + r.width/2; joy.cy = r.top + r.height/2;
+  stick.classList.add('dragging');
+  joyMove(e);
+  fadeHint();
+  e.preventDefault();
 }
-bindTouch('up','up'); bindTouch('down','down'); bindTouch('left','left'); bindTouch('right','right');
+function joyMove(e){
+  if(!joy.active) return;
+  let t=null;
+  for(const ct of e.changedTouches) if(ct.identifier===joy.id) t=ct;
+  if(!t) return;
+  let dx=t.clientX-joy.cx, dy=t.clientY-joy.cy;
+  const d=Math.hypot(dx,dy)||0.0001;
+  const clamp=Math.min(d, JOY_MAXR);
+  const kx=dx/d*clamp, ky=dy/d*clamp;
+  knob.style.transform='translate('+kx.toFixed(1)+'px,'+ky.toFixed(1)+'px)';
+  joy.dx = kx/JOY_MAXR; joy.dy = ky/JOY_MAXR;   // -1..1
+  e.preventDefault();
+}
+function joyEnd(e){
+  if(!joy.active) return;
+  let match=false;
+  for(const ct of e.changedTouches) if(ct.identifier===joy.id) match=true;
+  if(!match) return;
+  joy.active=false; joy.id=null; joy.dx=0; joy.dy=0;
+  knob.style.transform='translate(0,0)';
+  stick.classList.remove('dragging');
+}
+stick.addEventListener('touchstart', joyStart, {passive:false});
+// move/end 挂在 window：手指滑出摇杆范围也能继续控制
+addEventListener('touchmove', joyMove, {passive:false});
+addEventListener('touchend', joyEnd, {passive:false});
+addEventListener('touchcancel', joyEnd, {passive:false});
+
+// 攻击按钮
 const atkBtn=document.getElementById('atk');
 atkBtn.addEventListener('touchstart',e=>{ doAttack(); e.preventDefault(); },{passive:false});
 
@@ -619,15 +664,24 @@ function update(){
   }
 
   // ---- 玩家移动 ----
-  let mx=0,my=0;
-  if(keys.left) mx-=1; if(keys.right) mx+=1;
-  if(keys.up) my-=1; if(keys.down) my+=1;
+  let mx=0, my=0, mag=1;
+  if(joy.active && (Math.abs(joy.dx)>JOY_DEAD || Math.abs(joy.dy)>JOY_DEAD)){
+    // 摇杆：模拟量输入
+    mx=joy.dx; my=joy.dy;
+    mag=Math.min(1, Math.hypot(mx,my));            // 推杆幅度 -> 速度
+  } else {
+    // 键盘：八向
+    if(keys.left) mx-=1; if(keys.right) mx+=1;
+    if(keys.up) my-=1; if(keys.down) my+=1;
+  }
   player.moving = (mx||my)!==0 && player.knock<=0;
   if(player.moving){ fadeHint();
-    if(my<0) player.dir=1; else if(my>0) player.dir=0;
-    if(mx<0) player.dir=2; else if(mx>0) player.dir=3;
+    // 朝向取主导轴，斜向手感更自然
+    if(Math.abs(mx) > Math.abs(my)) player.dir = mx<0?2:3;
+    else                            player.dir = my<0?1:0;
     const len=Math.hypot(mx,my)||1;
-    moveEntity(player, mx/len*player.spd, my/len*player.spd);
+    const sp=player.spd*mag;
+    moveEntity(player, mx/len*sp, my/len*sp);
     player.animT++;
   }
   // 击退位移
