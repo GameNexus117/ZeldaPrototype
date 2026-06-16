@@ -9,6 +9,7 @@
   html,body { height:100%; background:#0d0f14; overflow:hidden;
     font-family:"Courier New",ui-monospace,monospace; touch-action:none; user-select:none; }
   #wrap { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
+  body.touch #wrap { align-items:flex-start; padding-top:6px; }
   #game { position:relative; }
   canvas { display:block; image-rendering:pixelated; image-rendering:crisp-edges;
     background:#e8d49a; box-shadow:0 0 0 3px #2a2118, 0 14px 40px rgba(0,0,0,.6); }
@@ -27,23 +28,23 @@
     text-align:center; }
 
   /* ---- 移动端触控 ---- */
-  #touch { position:absolute; inset:0; pointer-events:none; }
-  .pad { position:absolute; pointer-events:auto; }
-  /* 虚拟摇杆 */
-  #stick { left:14px; bottom:14px; width:160px; height:160px; touch-action:none; }
+  #touch { position:fixed; inset:0; pointer-events:none; z-index:10; }
+  .pad { position:fixed; pointer-events:auto; }
+  /* 虚拟摇杆（固定在视口左下） */
+  #stick { left:12px; bottom:max(16px, env(safe-area-inset-bottom)); width:138px; height:138px; touch-action:none; }
   #stickBase { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
-    width:120px; height:120px; border-radius:50%;
-    background:radial-gradient(circle at 50% 50%, rgba(40,55,75,.32), rgba(20,30,45,.46));
-    border:2px solid rgba(150,180,210,.45); box-shadow:inset 0 0 14px rgba(0,0,0,.35); }
-  #stickKnob { position:absolute; left:50%; top:50%; width:54px; height:54px;
-    margin:-27px 0 0 -27px; border-radius:50%; transform:translate(0,0);
+    width:108px; height:108px; border-radius:50%;
+    background:radial-gradient(circle at 50% 50%, rgba(40,55,75,.30), rgba(20,30,45,.44));
+    border:2px solid rgba(150,180,210,.42); box-shadow:inset 0 0 14px rgba(0,0,0,.32); }
+  #stickKnob { position:absolute; left:50%; top:50%; width:50px; height:50px;
+    margin:-25px 0 0 -25px; border-radius:50%; transform:translate(0,0);
     background:radial-gradient(circle at 36% 30%, rgba(170,210,255,.96), rgba(70,110,180,.92));
     border:2px solid rgba(225,238,255,.82); box-shadow:0 2px 8px rgba(0,0,0,.4);
     pointer-events:none; transition:transform .04s linear; }
   #stick.dragging #stickKnob { transition:none; }
-  #atk { right:30px; bottom:30px; width:80px; height:80px; border-radius:50%;
+  #atk { right:26px; bottom:max(28px, env(safe-area-inset-bottom)); width:76px; height:76px; border-radius:50%;
     background:radial-gradient(circle at 35% 30%,#ff8a5c,#c83a2a);
-    border:3px solid rgba(255,220,200,.7); color:#fff; font-weight:bold; font-size:22px;
+    border:3px solid rgba(255,220,200,.7); color:#fff; font-weight:bold; font-size:21px;
     display:flex; align-items:center; justify-content:center; pointer-events:auto;
     touch-action:none; }
   #atk:active { transform:scale(.92); }
@@ -56,14 +57,14 @@
     <canvas id="cv"></canvas>
     <div id="banner">二维塞尔达雏形 <small>PROTOTYPE</small></div>
     <div id="hint">方向键 / WASD 移动 · J / 空格 挥剑 · 昼夜交替，夜里怪物更警觉 · 探索大地图清理营地</div>
-    <div id="touch">
-      <div id="stick" class="pad">
-        <div id="stickBase"></div>
-        <div id="stickKnob"></div>
-      </div>
-      <div id="atk" class="pad">劍</div>
-    </div>
   </div>
+</div>
+<div id="touch">
+  <div id="stick" class="pad">
+    <div id="stickBase"></div>
+    <div id="stickKnob"></div>
+  </div>
+  <div id="atk" class="pad">劍</div>
 </div>
 <script>
 "use strict";
@@ -80,8 +81,8 @@ const MAP_W = 144, MAP_H = 104;          // 地图格数（远大于视口，约
 const WORLD_W = MAP_W*TILE, WORLD_H = MAP_H*TILE;
 
 // 地块类型
-const T = { SAND:0, GRASS:1, WATER:2, TREE:3, BUSH:4, FENCE:5, ROCK:6, FLOWER:7, CAMP:8, BEACH:9 };
-const SOLID = { [T.WATER]:1, [T.TREE]:1, [T.FENCE]:1, [T.ROCK]:1 }; // 阻挡通行
+const T = { SAND:0, GRASS:1, WATER:2, TREE:3, BUSH:4, FENCE:5, ROCK:6, FLOWER:7, CAMP:8, BEACH:9, BRIDGE_V:10, BRIDGE_H:11 };
+const SOLID = { [T.WATER]:1, [T.TREE]:1, [T.FENCE]:1, [T.ROCK]:1 }; // 阻挡通行（桥可走）
 
 // ---------- 调色板 ----------
 const C = {
@@ -124,6 +125,9 @@ function set(x,y,v){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return; map[idx(x,y)]=v; }
 
 const camps = [];   // {tx,ty}  营地（怪物休息点）
 let spawnPx = {x:0,y:0};
+const hRiverY = new Int16Array(MAP_W);   // 横河每列上沿
+const vRiverX = new Int16Array(MAP_H);   // 纵河每行左沿
+const bridges = [];                       // 桥头坐标（用于小地图/提示）
 
 function buildMap(){
   // 1. 基础铺沙
@@ -141,12 +145,14 @@ function buildMap(){
   let ry = Math.floor(MAP_H*0.62);
   for(let x=0;x<MAP_W;x++){
     ry += ri(-1,1); ry=Math.max(4,Math.min(MAP_H-5,ry));
+    hRiverY[x]=ry;                       // 记录横河上沿，便于架桥
     const w=ri(2,3);
     for(let d=0;d<w;d++){ set(x,ry+d,T.WATER); }
   }
   let rx2 = Math.floor(MAP_W*0.34);
   for(let y=0;y<MAP_H;y++){
     rx2 += ri(-1,1); rx2=Math.max(4,Math.min(MAP_W-5,rx2));
+    vRiverX[y]=rx2;                       // 记录纵河左沿
     const w=ri(2,3);
     for(let d=0;d<w;d++){ set(rx2+d,y,T.WATER); }
   }
@@ -226,6 +232,43 @@ function buildMap(){
     camps.push({tx:x,ty:y});
     placed++;
   }
+
+  // 11. 架桥：在两条河上各开几处可通行的桥（否则河把地图切断）
+  placeBridges();
+}
+
+// 竖向桥（跨横河，沿列 bx 铺2格宽，让玩家上下穿过）
+function carveBridgeV(bx){
+  const y0 = hRiverY[bx]||Math.floor(MAP_H*0.62);
+  let minY=99, maxY=-1;
+  for(let y=Math.max(2,y0-4); y<=Math.min(MAP_H-3,y0+8); y++){
+    for(let dx=0;dx<2;dx++){ if(get(bx+dx,y)===T.WATER){ set(bx+dx,y,T.BRIDGE_V); minY=Math.min(minY,y); maxY=Math.max(maxY,y); } }
+  }
+  if(maxY<0) return;
+  // 清出两端落脚点（避免桥头被树/石挡住）
+  for(let dx=0;dx<2;dx++){
+    if(SOLID[get(bx+dx,minY-1)]) set(bx+dx,minY-1,T.SAND);
+    if(SOLID[get(bx+dx,maxY+1)]) set(bx+dx,maxY+1,T.SAND);
+  }
+  bridges.push({tx:bx, ty:Math.round((minY+maxY)/2)});
+}
+// 横向桥（跨纵河，沿行 by 铺2格高）
+function carveBridgeH(by){
+  const x0 = vRiverX[by]||Math.floor(MAP_W*0.34);
+  let minX=9999, maxX=-1;
+  for(let x=Math.max(2,x0-4); x<=Math.min(MAP_W-3,x0+8); x++){
+    for(let dy=0;dy<2;dy++){ if(get(x,by+dy)===T.WATER){ set(x,by+dy,T.BRIDGE_H); minX=Math.min(minX,x); maxX=Math.max(maxX,x); } }
+  }
+  if(maxX<0) return;
+  for(let dy=0;dy<2;dy++){
+    if(SOLID[get(minX-1,by+dy)]) set(minX-1,by+dy,T.SAND);
+    if(SOLID[get(maxX+1,by+dy)]) set(maxX+1,by+dy,T.SAND);
+  }
+  bridges.push({tx:Math.round((minX+maxX)/2), ty:by});
+}
+function placeBridges(){
+  for(const f of [0.15,0.40,0.63,0.86]){ const bx=Math.floor(MAP_W*f); carveBridgeV(bx); }
+  for(const f of [0.20,0.50,0.80]){ const by=Math.floor(MAP_H*f); carveBridgeH(by); }
 }
 function walkableTile(x,y){ return !SOLID[get(x,y)]; }
 buildMap();
@@ -268,6 +311,20 @@ function drawTile(tx,ty){
     const o=Math.floor(time*0.6 + tx*3)%TILE;
     R(x+((o)%TILE),y+5,3,1,C.waterHi);
     R(x+((o+8)%TILE),y+10,3,1,C.waterHi);
+  }
+  else if(t===T.BRIDGE_V){ // 竖向桥：横向木板，左右护栏
+    R(x,y,TILE,TILE,C.water);                 // 底层水（栏外露出）
+    R(x+2,y,12,TILE,'#9a6a38');               // 木板路面
+    for(let i=0;i<TILE;i+=4) R(x+2,y+i,12,1,'#6e4a26'); // 板缝
+    R(x+1,y,2,TILE,'#5a3a1e'); R(x+13,y,2,TILE,'#5a3a1e'); // 护栏
+    R(x+1,y,2,2,'#7a5226'); R(x+13,y,2,2,'#7a5226');
+  }
+  else if(t===T.BRIDGE_H){ // 横向桥：纵向木板，上下护栏
+    R(x,y,TILE,TILE,C.water);
+    R(x,y+2,TILE,12,'#9a6a38');
+    for(let i=0;i<TILE;i+=4) R(x+i,y+2,1,12,'#6e4a26');
+    R(x,y+1,TILE,2,'#5a3a1e'); R(x,y+13,TILE,2,'#5a3a1e');
+    R(x,y+1,2,2,'#7a5226'); R(x,y+13,2,2,'#7a5226');
   }
   else if(t===T.FLOWER){
     const col = ((tx+ty)%2)?C.flower:C.flowerY;
@@ -903,6 +960,7 @@ function buildMiniTerrain(){
   for(let y=0;y<MAP_H;y++) for(let x=0;x<MAP_W;x++){
     const t=get(x,y); let col;
     if(t===T.WATER) col='#3a6ed8'; else if(t===T.TREE) col='#3f8f2a';
+    else if(t===T.BRIDGE_V||t===T.BRIDGE_H) col='#a06a30';
     else if(t===T.GRASS) col='#7bbf48'; else if(t===T.ROCK||t===T.FENCE) col='#8a7050';
     else if(t===T.BEACH) col='#e3d4a6'; else col='#d8c489';
     c.fillStyle=col; c.fillRect(x,y,1,1);
@@ -918,6 +976,8 @@ function drawMinimap(){
   const sxv=mw/MAP_W, syv=mh/MAP_H;
   // 营地
   ctx.fillStyle='#ff8a2a'; for(const cp of camps) ctx.fillRect(ox+cp.tx*sxv-1, oy+cp.ty*syv-1, 2,2);
+  // 桥（亮黄点，方便找过河点）
+  ctx.fillStyle='#ffe27a'; for(const b of bridges) ctx.fillRect(ox+b.tx*sxv-1, oy+b.ty*syv-1, 2,2);
   // 怪
   ctx.fillStyle='#ff3a2a'; for(const m of monsters) if(!m.dead) ctx.fillRect(ox+(m.x/TILE)*sxv, oy+(m.y/TILE)*syv,1,1);
   // 玩家
@@ -931,12 +991,19 @@ function drawMinimap(){
 // ===================================================================
 function loop(){ update(); render(); requestAnimationFrame(loop); }
 
+// 触屏检测：预留底部控制区，避免控件压住地图
+const IS_TOUCH = (('ontouchstart' in window) || (navigator.maxTouchPoints>0)) &&
+                 !window.matchMedia('(hover:hover) and (pointer:fine)').matches;
+if(IS_TOUCH) document.body.classList.add('touch');
+const CTRL_BAND = 168;   // 底部控制区高度（摇杆+按钮）
+
 function fit(){
   const pad=8;
-  const sw=window.innerWidth-pad*2, sh=window.innerHeight-pad*2;
+  const band = IS_TOUCH ? CTRL_BAND : 0;
+  const sw=window.innerWidth-pad*2, sh=window.innerHeight-pad*2-band;
   let s=Math.min(sw/CW, sh/CH);
-  s=Math.max(1, Math.floor(s)); // 整数缩放保持像素清晰
-  if(s*CW>sw||s*CH>sh){ s=Math.min(sw/CW,sh/CH); } // 太小则用小数
+  const si=Math.max(1, Math.floor(s));        // 优先整数缩放保持像素清晰
+  if(si*CW<=sw && si*CH<=sh) s=si;
   cv.style.width=(CW*s)+'px'; cv.style.height=(CH*s)+'px';
 }
 addEventListener('resize',fit); fit();
